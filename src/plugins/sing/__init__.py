@@ -5,13 +5,14 @@ import random
 import time
 import os
 
-from nonebot import on_message, require, logger
+from pydantic import BaseModel, Extra
+from nonebot import get_driver, on_message, require, logger
 from nonebot.typing import T_State
 from nonebot.rule import Rule
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import MessageSegment, Message, permission, GroupMessageEvent
 
-from src.common.config import GroupConfig, plugin_config
+from src.common.config import GroupConfig
 
 from .ncm_loader import download, get_song_title, get_song_id
 from .slicer import slice
@@ -19,6 +20,32 @@ from .mixer import mix, splice
 from .separater import separate, set_separate_cuda_devices
 from .svc_inference import inference, set_svc_cuda_devices
 
+
+# 这些建议直接在 .env 文件里配置
+class Config(BaseModel, extra=Extra.ignore):
+    # 每次发送的语音长度，单位：秒
+    # 太长的话合成会比较慢
+    # 现在已经做了多段切片了，这个长度仅取决于你能接受多久的合成耗时，跟显存等大小没太大关系
+    # 如果想一次唱完一整首歌，可以设个 600 之类的（十分钟）
+    # 不建议设 99999，有的歌好几个小时，你等吧.jpg
+    sing_length: int = 120
+
+    # key 对应命令词，即“牛牛唱歌” or “兔兔唱歌”
+    # value 对应 resource/sing/models/ 下的文件夹名，以及生成的音频文件名，也要对应模型 config 文件里的 spk 字段
+    # 注意 .env 里 dict 不能换行哦，得在一行写完所有的
+    sing_speakers: dict = {
+        "帕拉斯": "pallas",
+        "牛牛": "pallas",
+    }
+
+    sing_cuda_device: str = ''
+
+    song_cache_size: int = 100
+    song_cache_days: int = 30
+
+
+plugin_config = Config.parse_obj(get_driver().config)
+print("plugin_config", plugin_config)
 
 if plugin_config.sing_cuda_device:
     set_separate_cuda_devices(plugin_config.sing_cuda_device)
@@ -35,12 +62,6 @@ async def is_to_sing(bot: Bot, event: Event, state: T_State) -> bool:
     if not text:
         return False
 
-    if not SING_CMD in text and not any([cmd in text for cmd in SING_CONTINUE_CMDS]):
-        return False
-
-    if text.endswith(SING_CMD):
-        return False
-
     has_spk = False
     for name, speaker in plugin_config.sing_speakers.items():
         if not text.startswith(name):
@@ -55,12 +76,12 @@ async def is_to_sing(bot: Bot, event: Event, state: T_State) -> bool:
 
     if "key=" in text:
         key_pos = text.find("key=")
-        key_val = text[key_pos+4:].strip()  # 获取key=后面的值
-        text = text.replace("key="+key_val, "")  # 去掉消息中的key信息
+        key_val = text[key_pos+4:].strip() # 获取key=后面的值
+        text = text.replace("key="+key_val, "") # 去掉消息中的key信息
         try:
-            key_int = int(key_val)  # 判断输入的key是不是整数
+            key_int = int(key_val) #判断输入的key是不是整数
             if key_int < -12 or key_int > 12:
-                return False  # 限制一下key的大小，一个八度应该够了
+                return False #限制一下key的大小，一个八度应该够了
         except ValueError:
             return False
     else:
@@ -69,23 +90,21 @@ async def is_to_sing(bot: Bot, event: Event, state: T_State) -> bool:
 
     if text.startswith(SING_CMD):
         song_key = text.replace(SING_CMD, '').strip()
-        if not song_key:
+        song_id = song_key if song_key.isdigit() else await asyncify(get_song_id)(song_key)
+        if not song_id:
             return False
-        state['song_id'] = song_key
+        state['song_id'] = song_id
         state['chunk_index'] = 0
         return True
 
-    if text in SING_CONTINUE_CMDS:
-        progress = GroupConfig(group_id=event.group_id).sing_progress()
-        if not progress:
-            return False
-
+    progress = GroupConfig(group_id=event.group_id).sing_progress()
+    if text in SING_CONTINUE_CMDS and progress:
         song_id = progress['song_id']
         chunk_index = progress['chunk_index']
         key_val = progress['key']
         if not song_id or chunk_index > 100:
             return False
-        state['song_id'] = str(song_id)
+        state['song_id'] = song_id
         state['chunk_index'] = chunk_index
         state['key'] = key_val
         return True
@@ -110,8 +129,7 @@ async def _(bot: Bot, event: GroupMessageEvent, state: T_State):
     config.refresh_cooldown(SING_COOLDOWN_KEY)
 
     speaker = state['speaker']
-    song_key = state['song_id']
-    song_id = song_key if song_key.isdigit() else await asyncify(get_song_id)(song_key)
+    song_id = state['song_id']
     chunk_index = state['chunk_index']
     key = state['key']
 
@@ -133,10 +151,6 @@ async def _(bot: Bot, event: GroupMessageEvent, state: T_State):
     # 下载 -> 切片 -> 人声分离 -> 音色转换（SVC） -> 混音
     # 其中 人声分离和音色转换是吃 GPU 的，所以要加锁，不然显存不够用
     await sing_msg.send('欢呼吧！')
-
-    if not song_id:
-        logger.error('get_song_id failed', song_key, song_id)
-        await failed()
 
     if chunk_index == 0:
         for cache_path in Path('resource/sing/splices').glob(f'{song_id}_*_{key}key_{speaker}.mp3'):

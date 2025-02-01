@@ -1,10 +1,7 @@
 import random
-from nonebot import require, logger, get_bot, on_notice
-from nonebot.rule import Rule
-from nonebot.typing import T_State
-from nonebot.adapters import Bot, Event
+from nonebot import require, logger, get_bot
 from nonebot.exception import ActionFailed
-from nonebot.adapters.onebot.v11 import Message, NoticeEvent
+from nonebot.adapters.onebot.v11 import Message
 
 from src.plugins.repeater.model import Chat
 from src.common.config import BotConfig
@@ -20,7 +17,7 @@ async def change_name():
         return
 
     for group_id, target_msg in rand_messages.items():
-        if random.random() > 0.002:  # 期望约每8个多小时改一次
+        if random.random() > 0.002:  # 期望约每8个多小时改一次 暂时禁用
             continue
 
         bot_id = target_msg['bot_id']
@@ -55,11 +52,11 @@ async def change_name():
                 bot_id, card, group_id))
         try:
             # 改牛牛自己的群名片
-            await bot.call_api('set_group_card', **{
-                'group_id': group_id,
-                'user_id': bot_id,
-                'card': card
-            })
+            # await bot.call_api('set_group_card', **{
+            #     'group_id': group_id,
+            #     'user_id': bot_id,
+            #     'card': card
+            # })
 
             # 酒后夺舍！改群友的！
             if config.drunkenness() and await is_bot_admin(bot_id, group_id, True):
@@ -70,8 +67,8 @@ async def change_name():
                 })
 
             # 戳一戳
-            await bot.call_api('group_poke', **{
-                'user_id': target_user_id,
+            await bot.call_api('send_group_msg', **{
+                'message': Message('[CQ:poke,qq={}]'.format(target_user_id)),
                 'group_id': group_id
             })
 
@@ -80,49 +77,3 @@ async def change_name():
         except ActionFailed:
             # 可能牛牛退群了
             continue
-
-
-async def is_change_name_notice(bot: Bot, event: NoticeEvent, state: T_State) -> bool:
-    config = BotConfig(event.self_id, event.group_id)
-    if event.notice_type == 'group_card' and event.user_id == config.taken_name():
-        return True
-    return False
-
-
-watch_name = on_notice(rule=Rule(is_change_name_notice), priority=4)
-
-
-@watch_name.handle()
-async def watch_name_handle(bot: Bot, event: NoticeEvent, state: T_State):
-    group_id = event.group_id
-    user_id = event.user_id
-    bot_id = event.self_id
-
-    try:
-        info = await bot.call_api('get_group_member_info', **{
-            'group_id': group_id,
-            'user_id': user_id,
-            'no_cache': True
-        })
-    except ActionFailed:
-        return
-
-    card = info['card'] if info['card'] else info['nickname']
-
-    logger.info(
-        'bot [{}] watch name change by [{}] in group [{}]'.format(
-            bot.self_id, user_id, group_id))
-
-    config = BotConfig(bot.self_id, group_id)
-
-    try:
-        await bot.call_api('set_group_card', **{
-            'group_id': group_id,
-            'user_id': bot_id,
-            'card': card
-        })
-
-        config.update_taken_name(user_id)
-
-    except ActionFailed:
-        return

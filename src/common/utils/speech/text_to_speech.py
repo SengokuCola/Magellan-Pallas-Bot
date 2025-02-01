@@ -1,15 +1,12 @@
-import io
-import nltk
+
 import paddle
+import nltk
+import io
 import soundfile
 import numpy as np
 from pathlib import Path
-from threading import Lock
 from paddlespeech.t2s.exps.syn_utils import get_am_output, get_frontend, get_predictor, get_voc_output
-
-
-from src.common.config import plugin_config
-
+from threading import Lock
 
 AM_INFERENCE_DIR = Path("resource/tts/models/")
 VOC_INFERENCE_DIR = Path("resource/tts/models/vocoder")
@@ -37,8 +34,8 @@ am_predictor = get_predictor(
 # voc_predictor
 voc_predictor = get_predictor(
     model_dir=VOC_INFERENCE_DIR,
-    model_file=plugin_config.tts_vocoder + ".pdmodel",
-    params_file=plugin_config.tts_vocoder + ".pdiparams",
+    model_file="pwgan_aishell3" + ".pdmodel",
+    params_file="pwgan_aishell3" + ".pdiparams",
     device=device)
 
 
@@ -138,7 +135,7 @@ if __name__ == '__main__':
     for i in range(5):
         start_time = time.time()
         bs = text_2_speech("我是来自米诺斯的祭司帕拉斯，会在罗德岛休息一段时间。虽然这么说，我渴望以美酒和戏剧被招待，更渴望走向战场。",
-                           speed=1.0)
+                                speed=1.0)
         duration = time.time() - start_time
         print(f'cost {duration} s')
     with open("hello.wav", "wb") as f:

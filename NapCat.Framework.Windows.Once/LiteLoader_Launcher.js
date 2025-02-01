@@ -1,0 +1,1 @@
+require(`C:/GitHub/Pallas-Bot-master/NapCat.Framework.Windows.Once/LL/src/init.js`);

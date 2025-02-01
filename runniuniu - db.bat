@@ -1,0 +1,1 @@
+mongod --dbpath="C:\GitHub\Pallas-Bot-master\mongodb"

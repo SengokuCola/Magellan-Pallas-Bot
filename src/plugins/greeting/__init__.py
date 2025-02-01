@@ -2,9 +2,9 @@ import random
 import asyncio
 
 from pathlib import Path
-from nonebot import on_message, on_notice, get_bot
+from nonebot import on_command, on_message, on_notice, get_driver, get_bot
 from nonebot.adapters.onebot.v11 import MessageSegment, Message, permission, GroupMessageEvent
-from nonebot.rule import to_me, Rule
+from nonebot.rule import keyword, startswith, to_me, Rule
 from nonebot.typing import T_State
 from nonebot.adapters import Bot, Event
 from src.common.config import BotConfig, GroupConfig, UserConfig
@@ -67,9 +67,8 @@ async def handle_first_receive(bot: Bot, event: GroupMessageEvent, state: T_Stat
     config.refresh_cooldown('call_me')
 
     msg: Message = MessageSegment.record(
-        file=Path(wiki.get_random_voice(operator, greeting_voices)).read_bytes())
+        file=Path(wiki.get_random_voice(operator, greeting_voices)))
     await call_me_cmd.finish(msg)
-
 
 to_me_cmd = on_message(
     rule=to_me(),
@@ -87,9 +86,8 @@ async def handle_first_receive(bot: Bot, event: GroupMessageEvent, state: T_Stat
 
     if len(event.get_plaintext().strip()) == 0 and not event.reply:
         msg: Message = MessageSegment.record(
-            file=Path(wiki.get_random_voice(operator, greeting_voices)).read_bytes())
+            file=Path(wiki.get_random_voice(operator, greeting_voices)))
         await to_me_cmd.finish(msg)
-
 
 all_notice = on_notice(
     priority=14,
@@ -108,29 +106,29 @@ async def handle_first_receive(bot: Bot, event: Event, state: T_State):
         await asyncio.sleep(delay)
         config.refresh_cooldown('poke')
 
-        await get_bot(str(event.self_id)).call_api('group_poke', **{
-            "group_id": event.group_id,
-            "user_id": event.user_id
-        })
+        poke_msg = Message(MessageSegment.poke(id=event.user_id))
+        await all_notice.finish(poke_msg)
 
     elif event.notice_type == 'group_increase':
         if event.user_id == event.self_id:
-            msg = '我是来自米诺斯的祭司帕拉斯，会在罗德岛休息一段时间......虽然这么说，我渴望以美酒和戏剧被招待，更渴望走向战场。'
+            # msg = '虽然这片冰原覆盖的未知领域还很辽阔，但只要像校准精密仪器那样同步心跳频率，再复杂的谜题也会在协作观测中现出原型的！今后请多指教啦~'
+            msg = '好'
         elif await is_bot_admin(event.self_id, event.group_id):
-            msg: Message = MessageSegment.at(event.user_id) + MessageSegment.text(
-                '博士，欢迎加入这盛大的庆典！我是来自米诺斯的祭司帕拉斯......要来一杯美酒么？')
+            # msg: Message = MessageSegment.at(event.user_id) + MessageSegment.text(
+            #     '（通讯信号稳定中...）这里是麦哲伦，正在极光工作站进行链路接驳——啊！捕捉到新的频率波动了呢！')
+            msg = '好'
         else:
             return
         await all_notice.finish(msg)
 
     elif event.notice_type == 'group_admin' and event.sub_type == 'set' and event.user_id == event.self_id:
         msg: Message = MessageSegment.record(
-            file=Path(wiki.get_voice_filename(operator, '任命助理')).read_bytes())
+            file=Path(wiki.get_voice_filename(operator, '任命助理')))
         await all_notice.finish(msg)
 
     elif event.notice_type == 'friend_add':
         msg: Message = MessageSegment.record(
-            file=Path(wiki.get_voice_filename(operator, '精英化晋升2')).read_bytes())
+            file=Path(wiki.get_voice_filename(operator, '精英化晋升2')))
         await all_notice.finish(msg)
 
     # 被禁言自动退群

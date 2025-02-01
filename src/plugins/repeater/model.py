@@ -2,8 +2,6 @@ from typing import Generator, List, Optional, Union, Tuple, Dict, Any
 from functools import cached_property, cmp_to_key
 from dataclasses import dataclass
 from collections import defaultdict, deque
-from dotenv import load_dotenv
-load_dotenv()
 
 try:
     import jieba_fast.analyse as jieba_analyse
@@ -18,31 +16,26 @@ import time
 import random
 import re
 import atexit
-import os
+import openai  # 新增OpenAI导入
+import os  # 新增os导入用于环境变量
+from openai import OpenAI  # 新增 OpenAI 客户端导入
 
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-from src.common.config import BotConfig, plugin_config
-if plugin_config.use_rpc:
-    from src.common.utils.rpc import MongoClient
-else:
-    from pymongo import MongoClient
-    
-TTS_SERVER = os.getenv('TTS_SERVER', 'false').lower() in ['true', '1', 't', 'y', 'yes']
-if TTS_SERVER:
+from src.common.config import BotConfig
+try:
+    from src.common.utils.speech.text_to_speech import text_2_speech
     TTS_AVAIABLE = True
-else:
-    try:
-        from src.common.utils.speech.text_to_speech import text_2_speech
-        TTS_AVAIABLE = True
-    except Exception as error:
-        print('TTS not available, error:', error)
-        TTS_AVAIABLE = False
+except Exception as error:
+    print('TTS not available, error:', error)
+    TTS_AVAIABLE = False
 
+from .ai_response import process_ai_response
+from .mood import MoodSystem
 
-mongo_client = MongoClient(
-    plugin_config.mongo_host, plugin_config.mongo_port, unicode_decode_error_handler='ignore')
+mongo_client = pymongo.MongoClient('127.0.0.1', 27017,
+        unicode_decode_error_handler='ignore')
 
 mongo_db = mongo_client['PallasBot']
 
@@ -66,6 +59,53 @@ blacklist_mongo = mongo_db['blacklist']
 blacklist_mongo.create_index(name='group_index',
                              keys=[('group_id', pymongo.HASHED)])
 
+
+
+# OpenAI配置
+client = OpenAI(
+    api_key="sk-CArLoJQmawVkFIsnwJiqIzVBMFflZgGmWD762W57KtVhNMaO",
+    base_url="https://api.chatanywhere.tech/v1"  # 注意这里需要加上 /v1
+)
+
+def get_ai_response(text: str) -> str:
+    """
+    使用OpenAI API处理输入文本并返回响应
+    
+    Args:
+        text (str): 输入文本
+        
+    Returns:
+        str: AI生成的响应
+    """
+    if not client.api_key:
+        print("未设置OpenAI API密钥")
+        return text
+        
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-ca",
+            messages=[
+                {"role": "system", "content": "你是明日方舟的麦哲伦，从泰拉大陆穿越到了人类世界，现在已经融入了人类世界，现在正在浏览qq这款社交软件。请用你的语气说下面'我想要回复的内容'中的内容，稍微日常一些，不要像角色扮演。不要加双引号，只返回并输出一句话"},
+                {"role": "user", "content": text}
+            ],
+            max_tokens=30,  # 限制回复长度
+            temperature=0.9,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        error_type = type(e).__name__
+        print(f"OpenAI API调用错误: {error_type} - {str(e)}")
+        
+        # 根据不同错误类型返回不同的默认回复
+        if "Connection" in error_type or "Timeout" in error_type:
+            return "我电脑好像没网了"  # 网络问题时返回原文
+        elif "RateLimitError" in error_type:
+            return "不行，做不到"  # API限制时返回原文
+        else:
+            return "完全不知道"  # 其他错误也返回原文
 
 @dataclass
 class ChatData:
@@ -116,31 +156,32 @@ class ChatData:
 
     @cached_property
     def to_me(self) -> bool:
-        return self.plain_text.startswith('牛牛')
+        return self.plain_text.startswith('麦麦')
 
 
 class Chat:
 
     # 可以试着改改的参数
 
-    ANSWER_THRESHOLD = plugin_config.answer_threshold
-    ANSWER_THRESHOLD_WEIGHTS = plugin_config.answer_threshold_weights
-    TOPICS_SIZE = plugin_config.topics_size
-    TOPICS_IMPORTANCE = plugin_config.topics_importance
-    CROSS_GROUP_THRESHOLD = plugin_config.cross_group_threshold
-    REPEAT_THRESHOLD = plugin_config.repeat_threshold
-    SPEAK_THRESHOLD = plugin_config.speak_threshold
-    DUPLICATE_REPLY = plugin_config.duplicate_reply
+    ANSWER_THRESHOLD = 2            # 降低阈值，让机器人更容易回复（原为3）
+    ANSWER_THRESHOLD_WEIGHTS = [20, 30, 50]  # 调整权重分布，增加低阈值的权重（原为[7, 23, 70]）
+    TOPICS_SIZE = 16                # 上下文联想，记录多少个关键词（每个群）
+    TOPICS_IMPORTANCE = 10000       # 上下文命中后，额外的权重系数
+    CROSS_GROUP_THRESHOLD = 2       # N 个群有相同的回复，就跨群作为全局回复
+    REPEAT_THRESHOLD = 2            # 降低复读阈值（原为3）
+    SPEAK_THRESHOLD = 5             # 降低主动发言阈值（原为5）
+    DUPLICATE_REPLY = 5             # 降低重复限制（原为10）
 
-    SPLIT_PROBABILITY = plugin_config.split_probability
-    DRUNK_TTS_THRESHOLD = plugin_config.drunk_tts_threshold if TTS_AVAIABLE else 99999999
-    SPEAK_CONTINUOUSLY_PROBABILITY = plugin_config.speak_continuously_probability
-    SPEAK_POKE_PROBABILITY = plugin_config.speak_poke_probability
-    SPEAK_CONTINUOUSLY_MAX_LEN = plugin_config.speak_continuously_max_len
+    SPLIT_PROBABILITY = 0.6         # 增加分割回复的概率（原为0.5）
+    DRUNK_TTS_THRESHOLD = 6 if TTS_AVAIABLE else 99999999
+    # 喝醉之后，超过多长的文本全部转换成语音发送
+    SPEAK_CONTINUOUSLY_PROBABILITY = 0.7  # 增加连续说话的概率（原为0.5）
+    SPEAK_POKE_PROBABILITY = 0.7    # 增加戳一戳的概率（原为0.6）
+    SPEAK_CONTINUOUSLY_MAX_LEN = 3  # 增加连续说话的最大长度（原为2）
 
-    SAVE_TIME_THRESHOLD = plugin_config.save_time_threshold
-    SAVE_COUNT_THRESHOLD = plugin_config.save_count_threshold
-    SAVE_RESERVED_SIZE = plugin_config.save_reserved_size
+    SAVE_TIME_THRESHOLD = 3600      # 每隔多久进行一次持久化 ( 秒 )
+    SAVE_COUNT_THRESHOLD = 1000     # 单个群超过多少条聊天记录就进行一次持久化。与时间是或的关系
+    SAVE_RESERVED_SIZE = 100        # 保存时，给内存中保留的大小
 
     # 最好别动的参数
 
@@ -240,7 +281,7 @@ class Chat:
         '''
         回复这句话，可能会分多次回复，也可能不回复
         '''
-        # 不回复太短的对话，大部分是“？”、“草”
+        # 不回复太短的对话，大部分是"?"、"草"
         if self.chat_data.is_plain_text and len(self.chat_data.plain_text) < 2:
             return None
 
@@ -252,6 +293,7 @@ class Chat:
         #    return None
 
         results = self._context_find()
+        # print(results)
         if not results:
             return None
 
@@ -270,10 +312,14 @@ class Chat:
                 'reply_keywords': Chat.REPLY_FLAG,
             })
 
-        def yield_results(results: Tuple[List[str], str]) -> Generator[Message, None, None]:
-            answer_list, answer_keywords = results
+        def yield_results(results: Tuple[List[str], str, Dict]) -> Generator[Message, None, None]:
+            answer_list, answer_keywords, context_info = results
             group_bot_replies = Chat._reply_dict[group_id][bot_id]
+            
             for item in answer_list:
+                print("*raw response: "+item)
+                # 输出原始回复
+ 
                 with Chat._reply_lock:
                     group_bot_replies.append({
                         'time': int(time.time()),
@@ -282,19 +328,33 @@ class Chat:
                         'reply': item,
                         'reply_keywords': answer_keywords,
                     })
-                if '[CQ:' not in item:
-                    with Chat._topics_lock:
-                        Chat._recent_topics[group_id] += [
-                            k for k in answer_keywords.split(' ') if not k.startswith('牛牛')
-                        ]
+                
+                # 使用新的AI处理函数
+                processed_item = process_ai_response(item, context_info)
+                    
                 with Chat._topics_lock:
                     Chat._recent_topics[group_id] += [
-                        k for k in self.chat_data._keywords_list if not k.startswith('牛牛')
+                        k for k in answer_keywords.split(' ') if not k.startswith('麦麦')
                     ]
-                if '[CQ:' not in item and len(item) > Chat.DRUNK_TTS_THRESHOLD and self.config.drunkenness():
-                    yield Message(Chat._text_to_speech(item))
+                
+                with Chat._topics_lock:
+                    Chat._recent_topics[group_id] += [
+                        k for k in self.chat_data._keywords_list if not k.startswith('麦麦')
+                    ]
+                
+                if '[CQ:' not in processed_item and len(processed_item) > Chat.DRUNK_TTS_THRESHOLD and self.config.drunkenness():
+                    try:
+                        yield Message(Chat._text_to_speech(processed_item))
+                    except Exception as e:
+                        print(f"[错误] 语音转换失败: {str(e)}")
+                        yield Message(processed_item)
                 else:
-                    yield Message(item)
+                    try:
+                        yield Message(processed_item)
+                    except Exception as e:
+                        print(f"[错误] 消息转换失败: {str(e)}")
+                        # 如果转换失败，尝试直接发送文本
+                        yield Message(str(processed_item))
 
             with Chat._reply_lock:
                 group_bot_replies = group_bot_replies[-Chat.SAVE_RESERVED_SIZE:]
@@ -302,26 +362,9 @@ class Chat:
         return yield_results(results)
 
     @ staticmethod
-    def reply_post_proc(raw_message: str, new_msg: str, bot_id: int, group_id: int) -> bool:
+    def speak() -> Optional[Tuple[int, int, List[Message]]]:
         '''
-        对 bot 回复的消息进行后处理，将缓存替换为处理后的消息
-        '''
-
-        if raw_message == new_msg:
-            return True
-
-        reply_data = Chat._reply_dict[group_id][bot_id][::-1]
-        for item in reply_data:
-            if item['reply'] == raw_message:
-                with Chat._reply_lock:
-                    item['reply'] = new_msg
-                return True
-        return False
-
-    @ staticmethod
-    def speak() -> Optional[Tuple[int, int, List[Message], Optional[int]]]:
-        '''
-        主动发言，返回当前最希望发言的 bot 账号、群号、发言消息 List、戳一戳目标，也有可能不发言
+        主动发言，返回当前最希望发言的 bot 账号、群号、发言消息 List，也有可能不发言
         '''
 
         basic_msgs_len = 10
@@ -434,13 +477,13 @@ class Chat:
                 if not answer:
                     break
                 speak_list.extend(answer)
-            
-            target_id = None
+
             if random.random() < Chat.SPEAK_POKE_PROBABILITY:
                 target_id = random.choice(
                     Chat._message_dict[group_id])['user_id']
+                speak_list.append(Message('[CQ:poke,qq={}]'.format(target_id)))
 
-            return (bot_id, group_id, speak_list, target_id)
+            return (bot_id, group_id, speak_list)
 
         return None
 
@@ -527,6 +570,20 @@ class Chat:
 
     def _message_insert(self):
         group_id = self.chat_data.group_id
+
+        # 分析文本并更新心情
+        if self.chat_data.is_plain_text:
+            # 获取最近的聊天记录
+            recent_messages = []
+            if group_id in Chat._message_dict:
+                recent_messages = [msg['raw_message'] for msg in Chat._message_dict[group_id][-5:]]
+            
+            MoodSystem.process_text(
+                group_id=group_id,
+                text=self.chat_data.plain_text,
+                context_messages=recent_messages,
+                is_to_me=self.chat_data.to_me
+            )
 
         with Chat._message_lock:
             Chat._message_dict[group_id].append({
@@ -673,25 +730,46 @@ class Chat:
             }
             context_mongo.insert_one(context)
 
-    def _context_find(self) -> Optional[Tuple[List[str], str]]:
+    def _context_find(self) -> Optional[Tuple[List[str], str, Dict]]:
+        """
+        这个方法用于在数据库中查找可能的回复内容。
+        
+        返回类型说明:
+        - Optional: 表示返回值可能为 None
+        - Tuple[List[str], str, Dict]: 如果找到回复,会返回一个元组:
+          - List[str]: 第一个元素是候选回复消息的列表
+          - str: 第二个元素是触发回复的关键词
+          - Dict: 第三个元素是相关的上下文信息
+        """
 
-        group_id = self.chat_data.group_id
-        raw_message = self.chat_data.raw_message
-        keywords = self.chat_data.keywords
-        bot_id = self.chat_data.bot_id
+        # 从 chat_data 中获取当前消息的基本信息
+        group_id = self.chat_data.group_id      # 群号
+        raw_message = self.chat_data.raw_message # 原始消息内容
+        keywords = self.chat_data.keywords       # 消息关键词
+        bot_id = self.chat_data.bot_id          # 机器人 ID
 
-        # 复读！
+        # 复读功能实现
+        # 1. 首先检查该群是否有消息记录
         if group_id in Chat._message_dict:
             group_msgs = Chat._message_dict[group_id]
+            
+            # 2. 判断是否满足复读条件:
+            # - 群消息数量达到复读阈值(REPEAT_THRESHOLD)
+            # - 最近的几条消息都是相同内容(raw_message相同)
             if len(group_msgs) >= Chat.REPEAT_THRESHOLD and \
                 all(item['raw_message'] == raw_message
                     for item in group_msgs[-Chat.REPEAT_THRESHOLD + 1:]):
-                # 到这里说明当前群里是在复读
+                
+                # 3. 获取机器人在该群的回复记录
                 group_bot_replies = Chat._reply_dict[group_id][bot_id]
+                
+                # 4. 判断是否要进行复读:
+                # - 如果机器人有回复记录,且最后一次回复不是这句话,就复读
+                # - 否则说明已经复读过了,就不再复读
                 if len(group_bot_replies) and group_bot_replies[-1]['reply'] != raw_message:
-                    return ([raw_message, ], keywords)
+                    return ([raw_message, ], keywords, {'type': 'repeat', 'raw_message': raw_message})
                 else:
-                    # 复读过一次就不再回复这句话了
+                    # 已经复读过一次,不再重复
                     return None
 
         context = context_mongo.find_one({'keywords': keywords})
@@ -755,19 +833,21 @@ class Chat:
                 continue
 
             sample_msg = answer['messages'][0]
+
+            sample_msg = f'唔{sample_msg}'
             if self.chat_data.is_image and '[CQ:' not in sample_msg:
                 # 图片消息不回复纯文本。图片经常是表情包，后面的纯文本啥都有，很乱
                 continue
             if sample_msg.startswith('牛牛'):
                 if not self.chat_data.to_me or len(sample_msg) <= 6:
-                    # 这种一般是学反过来的，比如有人教“牛牛你好”——“你好”（反复发了好几次，互为上下文了）
-                    # 然后下次有人发“你好”，突然回个“牛牛你好”，有点莫名其妙的
+                    # 这种一般是学反过来的，比如有人教"牛牛你好"——"你好"（反复发了好几次，互为上下文了）
+                    # 然后下次有人发"你好"，突然回个"牛牛你好"，有点莫名其妙的
                     continue
             if sample_msg.startswith("[CQ:xml"):
                 continue
             if '\n' in sample_msg:
                 continue
-            if count < 3 and sample_msg in recent_message:  # 别人刚发的就重复，显得很笨
+            if sample_msg in recent_message:  # 别人刚发的就重复，显得很笨
                 continue
 
             if answer['group_id'] == group_id:
@@ -793,10 +873,18 @@ class Chat:
         if not candidate_answers:
             return None
 
-        weights = [min(answer['count'], 10) +
-                   (answer['topical'] if 'topical' in answer else 0) *
-                   Chat.TOPICS_IMPORTANCE
-                   for answer in candidate_answers.values()]
+        # 获取当前心情值作为因子
+        mood_factor = MoodSystem.get_mood_factor(group_id)
+        
+        # 在选择回复时考虑心情因素
+        weights = [
+            min(answer['count'], 10) +
+            (answer['topical'] if 'topical' in answer else 0) *
+            Chat.TOPICS_IMPORTANCE +
+            # 心情好时更倾向于选择长回复
+            len(answer['messages'][0]) * mood_factor
+            for answer in candidate_answers.values()
+        ]
         final_answer = random.choices(
             list(candidate_answers.values()), weights=weights)[0]
         answer_str = random.choice(final_answer['messages'])
@@ -804,10 +892,27 @@ class Chat:
         if answer_str.startswith('牛牛'):
             answer_str = answer_str[2:]
 
+        # 构建上下文信息
+        context_info = {
+            'type': 'normal',
+            'trigger_keywords': keywords,
+            'answer_keywords': answer_keywords,
+            'original_context': context,
+            'group_id': group_id,  # 添加群组ID
+            'pre_messages': [],  # 默认为空列表
+            'trigger_keywords': [],  # 默认为空列表
+            'trigger_message': self.chat_data.raw_message  # 添加触发回复的消息
+        }
+        
+        # 如果群组存在消息记录，则添加最近的消息
+        if group_id in Chat._message_dict:
+            context_info['pre_messages'] = [msg['raw_message'] for msg in Chat._message_dict[group_id][-5:]]
+            context_info['trigger_keywords'] = self.chat_data._keywords_list
+
         if 0 < answer_str.count('，') <= 3 and '[CQ:' not in answer_str \
                 and random.random() < Chat.SPLIT_PROBABILITY:
-            return (answer_str.split('，'), answer_keywords)
-        return ([answer_str, ], answer_keywords)
+            return (answer_str.split('，'), answer_keywords, context_info)
+        return ([answer_str, ], answer_keywords, context_info)
 
     @ staticmethod
     def _text_to_speech(text: str) -> MessageSegment:

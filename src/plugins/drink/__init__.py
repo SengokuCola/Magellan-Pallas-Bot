@@ -1,18 +1,18 @@
 import random
 import asyncio
 
-from nonebot import on_message, require, logger
+from nonebot import on_message, require, get_bot, logger, get_driver
 from nonebot.exception import ActionFailed
 from nonebot.typing import T_State
-from nonebot.rule import Rule
-from nonebot.adapters import Bot
+from nonebot.rule import keyword, to_me, Rule
+from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
 from nonebot.adapters.onebot.v11 import permission
-from src.common.config import BotConfig
+from src.common.config import BotConfig, GroupConfig
 
 
 async def is_drink_msg(bot: Bot, event: GroupMessageEvent, state: T_State) -> bool:
-    return event.get_plaintext().strip() in ['牛牛喝酒', '牛牛干杯', '牛牛继续喝']
+    return event.get_plaintext().strip() in ['麦麦喝酒', '麦麦干杯', '麦麦继续喝']
 
 drink_msg = on_message(
     rule=Rule(is_drink_msg),
@@ -49,11 +49,11 @@ async def _(bot: Bot, event: GroupMessageEvent, state: T_State):
 
     try:
         if go_to_sleep:
-            await drink_msg.send('呀，博士。你今天走起路来，怎么看着摇…摇……晃…………')
+            await drink_msg.send('嗝呜...博、博士，腾龙的惯性导航模块被替换成枫糖浆动力核心了？！明明校准了零下40°的极地参数...现在它居然在绕着我跳∞字热舞欸——')
             await asyncio.sleep(1)
             await drink_msg.send('Zzz……')
         else:
-            await drink_msg.send('呀，博士。你今天走起路来，怎么看着摇摇晃晃的？')
+            await drink_msg.send('（信号溢出蜂蜜色噪点...）腾龙的导航协议被雪鸮拆解成华尔兹指令集了...哔——（＞▽＜）')
     except ActionFailed:
         pass
 
@@ -61,7 +61,7 @@ async def _(bot: Bot, event: GroupMessageEvent, state: T_State):
     if config.sober_up() and not config.is_sleep():
         logger.info('bot [{}] sober up in group [{}]'.format(
             event.self_id, event.group_id))
-        await drink_msg.finish('呃......咳嗯，下次不能喝、喝这么多了......')
+        await drink_msg.finish('（通讯链路突然冻结三秒）博士...被精准捕获逻辑漏洞了呢(´•̥̥̥ω•̥̥̥`)')
 
 
 update_sched = require('nonebot_plugin_apscheduler').scheduler

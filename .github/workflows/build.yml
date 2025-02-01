@@ -21,56 +21,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      - name: Base Generate Tags
+      - name: Generate Tags
         uses: docker/metadata-action@v4
         id: metadata
         with:
           images: |
-            ${{ github.repository_owner }}/pallas-bot
+            misteo/pallas-bot
           tags: |
             type=raw,value=latest
 
-      - name: Base Build and Publish
+      - name: Build and Publish
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: Dockerfile
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-
-      - name: AI on GPU Generate Tags
-        uses: docker/metadata-action@v4
-        id: gpuaimetadata
-        with:
-          images: |
-            misteo/pallas-bot
-          tags: |
-            type=raw,value=gpuai-latest
-
-      - name: AI on GPU Build and Publish
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: GPU.Dockerfile
-          push: true
-          tags: ${{ steps.gpuaimetadata.outputs.tags }}
-          labels: ${{ steps.gpuaimetadata.outputs.labels }}
-
-      - name: AI on CPU Generate Tags
-        uses: docker/metadata-action@v4
-        id: cpuaimetadata
-        with:
-          images: |
-            misteo/pallas-bot
-          tags: |
-            type=raw,value=cpuai-latest
-
-      - name: AI on CPU Build and Publish
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: CPU.Dockerfile
-          push: true
-          tags: ${{ steps.cpuaimetadata.outputs.tags }}
-          labels: ${{ steps.cpuaimetadata.outputs.labels }}

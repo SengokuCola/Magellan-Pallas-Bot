@@ -15,13 +15,11 @@ services:
       APP_MODULE: bot:app
       MAX_WORKERS: 1
       WAIT_HOSTS: mongodb:27017
-      TIMEOUT: 480
     networks:
       - pallasbot
     volumes:
       - /opt/dockerstore/pallas-bot/resource/:/app/resource
       - /opt/dockerstore/pallas-bot/accounts/:/app/accounts
-      - /opt/dockerstore/pallas-bot/.env.prod:/app/.env.prod
     depends_on:
       - mongodb
 

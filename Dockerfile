@@ -16,13 +16,13 @@ FROM tiangolo/uvicorn-gunicorn-fastapi:python3.9
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y ffmpeg
-
 ADD https://github.com/ufoscout/docker-compose-wait/releases/download/2.9.0/wait /app/wait
 
 RUN chmod +x /app/wait
 
 RUN echo "./wait" >> /app/prestart.sh
+
+RUN echo "sed -i 's/127.0.0.1/mongodb/g' \`grep 127.0.0.1 -rl /app/src/\`" >> /app/prestart.sh
 
 COPY --from=requirements-stage /tmp/requirements.txt /app/requirements.txt
 
